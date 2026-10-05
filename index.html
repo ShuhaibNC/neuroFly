@@ -349,6 +349,7 @@
       .signals { grid-template-columns:repeat(2, 1fr); gap:13px 10px; }
     }
     @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
       .fly .wing, .phase-dot { animation: none !important; }
     }
   </style>
@@ -491,6 +492,7 @@
       var brainReady = false;
       var anchorCount = 0;
       var lastPhase = '';
+      var lastFrameTimestamp = 0;
 
       var phases = [
         { end: .14, name: 'Taking flight', key: 'launch' },
@@ -547,14 +549,21 @@
         catch (error) { return; }
         renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         renderer.setClearColor(0x000000, 0);
-        renderer.shadowMap.enabled = true;
-        renderer.shadowMap.type = T.PCFSoftShadowMap;
+        renderer.shadowMap.enabled = false;
         fly3dHost.appendChild(renderer.domElement);
+        renderer.domElement.addEventListener('webglcontextlost', function (event) {
+          event.preventDefault();
+          fly3dHost.parentElement.classList.remove('fly-model-ready');
+        });
+        renderer.domElement.addEventListener('webglcontextrestored', function () {
+          fly3dHost.parentElement.classList.add('fly-model-ready');
+          resizeFly3D();
+        });
 
         scene.add(new T.HemisphereLight(0xfff3df, 0x273a30, 1.55));
         var keyLight = new T.DirectionalLight(0xffd6b6, 2.85);
         keyLight.position.set(-280, -340, 520);
-        keyLight.castShadow = true;
+        keyLight.castShadow = false;
         scene.add(keyLight);
         var rimLight = new T.DirectionalLight(0xb7d8c9, 1.25);
         rimLight.position.set(320, 60, 240);
@@ -584,6 +593,8 @@
         for (var r = 0; r <= rings; r++) {
           var v = r / rings;
           var y = -145 + v * 294;
+          y += 11 * Math.exp(-Math.pow(v / .075, 2));
+          y -= 5 * Math.exp(-Math.pow((1 - v) / .065, 2));
           var shoulder = .94 + .12 * Math.cos(Math.PI * 2 * (v - .42));
           var baseRadius = 171 * Math.pow(Math.sin(Math.PI * v), .34) * shoulder;
           for (var j = 0; j <= slices; j++) {
@@ -599,9 +610,11 @@
             var bruise = Math.max(0, dir.dot(bruiseDir) - .58) / .42;
             bruise *= Math.max(0, 1 - Math.abs(y-44)/112);
             var topShade = Math.max(0, (-y-83)/80);
-            var rr = .62 + seed*.055 - bruise*.38 - topShade*.10;
-            var gg = .085 + seed*.025 - bruise*.035;
-            var bb = .045 + seed*.018 - bruise*.012;
+            var mottling = (Math.sin(x*.071 + z*.053) * Math.cos(y*.063 - x*.027) + 1) * .5;
+            var blush = Math.max(0, Math.cos(theta + .75)) * Math.max(0, 1 - Math.abs(y + 8) / 155);
+            var rr = .56 + seed*.045 + mottling*.035 + blush*.055 - bruise*.34 - topShade*.08;
+            var gg = .075 + seed*.018 + blush*.035 - bruise*.028;
+            var bb = .035 + seed*.014 + blush*.012 - bruise*.01;
             colors.push(Math.max(.12,rr), Math.max(.025,gg), Math.max(.018,bb));
           }
         }
@@ -618,7 +631,7 @@
         appleGeometry.computeVertexNormals();
         var appleMat = new T.MeshStandardMaterial({ vertexColors:true, roughness:.34, metalness:.01 });
         var appleMesh = new T.Mesh(appleGeometry, appleMat);
-        appleMesh.castShadow = true;
+        appleMesh.castShadow = false;
         appleGroup.add(appleMesh);
 
         var stemMat = material([.12,.075,.045], { roughness:.92 });
@@ -658,7 +671,7 @@
         var character = new T.Group();
         displayScale.scale.setScalar(320);
         character.scale.setScalar(.52);
-        character.rotation.set(-.46, 0, 0);
+        character.rotation.set(-Math.PI / 2, 0, 0);
         displayScale.add(character);
         rig.add(displayScale);
         scene.add(rig);
@@ -737,6 +750,7 @@
 
         function resizeFly3D() {
           var rect = fly3dHost.getBoundingClientRect();
+          renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
           renderer.setSize(Math.max(1, rect.width), Math.max(1, rect.height), false);
           var aspect = Math.max(1, rect.width) / Math.max(1, rect.height);
           var baseAspect = 900 / 610;
@@ -775,16 +789,19 @@
         return Math.atan2(Math.sin(to - from), Math.cos(to - from));
       }
 
-      function updateFly3D(p, angle, sitting, now, bank, pitch) {
+      function updateFly3D(p, angle, sitting, now, bank, pitch, frameDelta) {
         if (!fly3d) return;
         var flutter = sitting ? 0 : Math.sin(now * .009) * 2.4;
         fly3d.rig.position.set(p.x, p.y + flutter, p.z + (sitting ? 0 : Math.sin(now * .0063) * 4));
 
         var targetHeading = angle * Math.PI / 180;
         if (fly3d.heading === null) fly3d.heading = targetHeading;
-        fly3d.heading += shortestAngle(fly3d.heading, targetHeading) * (sitting ? .18 : .11);
-        fly3d.bank += (bank - fly3d.bank) * .09;
-        fly3d.pitch += (pitch - fly3d.pitch) * .08;
+        var headingEase = 1 - Math.pow(1 - (sitting ? .18 : .11), frameDelta);
+        var bankEase = 1 - Math.pow(.91, frameDelta);
+        var pitchEase = 1 - Math.pow(.92, frameDelta);
+        fly3d.heading += shortestAngle(fly3d.heading, targetHeading) * headingEase;
+        fly3d.bank += (bank - fly3d.bank) * bankEase;
+        fly3d.pitch += (pitch - fly3d.pitch) * pitchEase;
         fly3d.rig.rotation.z = fly3d.heading;
         fly3d.displayScale.rotation.x = fly3d.bank;
         fly3d.displayScale.rotation.y = fly3d.pitch;
@@ -867,6 +884,15 @@
         brain3dHost.addEventListener('pointercancel', function () { drag.down = false; });
         var observer = new ResizeObserver(setupBrain);
         observer.observe(brain3dHost);
+        brain3dHost.addEventListener('webglcontextlost', function (event) {
+          event.preventDefault();
+          brainReady = false;
+          liveTag.textContent = 'Reconnecting';
+        });
+        brain3dHost.addEventListener('webglcontextrestored', function () {
+          liveTag.textContent = 'Active';
+          setupBrain();
+        });
         setupBrain();
         return true;
       }
@@ -1003,6 +1029,8 @@
       });
 
       function frame(now) {
+        var frameDelta = lastFrameTimestamp ? Math.min(3, Math.max(0, (now - lastFrameTimestamp) / 16.667)) : 1;
+        lastFrameTimestamp = now;
         var elapsed = paused ? elapsedBeforePause : (now - start) % cycle;
         var t = elapsed / cycle;
         var phase = getPhase(t);
@@ -1018,7 +1046,7 @@
         var sitting = phase.key === 'taste';
         if (sitting) { angle = 8; bank = 0; pitch = 0; }
         fly.setAttribute('transform', 'translate(' + p.x.toFixed(2) + ' ' + p.y.toFixed(2) + ') rotate(' + angle.toFixed(2) + ') scale(' + (sitting ? .78 : .9) + ')');
-        updateFly3D(p, angle, sitting, paused ? elapsedBeforePause : now, bank, pitch);
+        updateFly3D(p, angle, sitting, paused ? elapsedBeforePause : now, bank, pitch, frameDelta);
         fly.classList.toggle('flying', !sitting && !paused);
         if (phase.key !== lastPhase) {
           phaseValue.textContent = phase.name;
