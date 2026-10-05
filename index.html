@@ -486,8 +486,8 @@
       var brain3d = null;
       var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       var paused = reduceMotion;
-      var cycle = 10500;
-      var elapsedBeforePause = reduceMotion ? 8700 : 0;
+      var cycle = 12000;
+      var elapsedBeforePause = reduceMotion ? 10600 : 0;
       var start = performance.now();
       var brainReady = false;
       var anchorCount = 0;
@@ -495,61 +495,54 @@
       var lastFrameTimestamp = 0;
 
       var phases = [
-        { end: .14, name: 'Taking flight', key: 'launch' },
-        { end: .65, name: 'Circling the fruit', key: 'orbit' },
-        { end: .79, name: 'Approaching', key: 'approach' },
+        { end: .12, name: 'Taking flight', key: 'launch' },
+        { end: .66, name: 'Circling the fruit', key: 'orbit' },
+        { end: .80, name: 'Approaching', key: 'approach' },
         { end: 1, name: 'Tasting the apple', key: 'taste' }
       ];
+      var FLIGHT_END = .80, SH = 610;
 
-      function bezier(p0, p1, p2, p3, t) {
-        var u = 1 - t;
-        return {
-          x: u*u*u*p0.x + 3*u*u*t*p1.x + 3*u*t*t*p2.x + t*t*t*p3.x,
-          y: u*u*u*p0.y + 3*u*u*t*p1.y + 3*u*t*t*p2.y + t*t*t*p3.y,
-          z: u*u*u*p0.z + 3*u*u*t*p1.z + 3*u*t*t*p2.z + t*t*t*p3.z
-        };
-      }
+      /* Scene coordinates are authored y-down (like the SVG); the WebGL scene is y-up. */
+      function toWorld(p, out) { return out.set(p[0], SH - p[1], p[2]); }
 
-      /* A spatial orbit rather than a flat screen path. The fly launches from
-         the near face of the apple, recedes behind its crown, then sweeps back
-         toward the viewer before settling on the skin. */
-      function flightPosition(t) {
-        if (t < .14) {
-          var q1 = t / .14;
-          return bezier({x:586,y:284,z:132},{x:760,y:175,z:178},{x:696,y:54,z:74},{x:522,y:85,z:18}, q1);
-        }
-        if (t < .39) {
-          var q2 = (t - .14) / .25;
-          return bezier({x:522,y:85,z:18},{x:344,y:42,z:-184},{x:116,y:151,z:-224},{x:175,y:277,z:-176}, q2);
-        }
-        if (t < .65) {
-          var q3 = (t - .39) / .26;
-          return bezier({x:175,y:277,z:-176},{x:205,y:390,z:-108},{x:758,y:165,z:254},{x:734,y:318,z:204}, q3);
-        }
-        if (t < .79) {
-          var q4 = (t - .65) / .14;
-          return bezier({x:734,y:318,z:204},{x:725,y:407,z:226},{x:657,y:275,z:166},{x:586,y:284,z:132}, q4);
-        }
-        return { x: 586, y: 284, z: 132 };
+      /* One smooth spline for the whole flight: lift-off, a wide 3D orbit that passes
+         behind the crown and back in front, then a spiral-in to the bruised patch. */
+      var LAND = [588, 286, 140];
+      var PATH_PTS = [
+        LAND, [628,230,168], [706,150,150], [690,70,60], [560,40,-70], [400,50,-190],
+        [230,92,-250], [120,190,-190], [130,310,-80], [215,418,60], [380,470,200],
+        [560,440,300], [720,360,272], [770,260,200], [722,222,170], [650,248,158], [607,274,146], LAND
+      ];
+      var flightCurve = null;
+
+      function trapezoid(t) {           /* eased progress: accelerate, cruise, decelerate */
+        var a = .10, d = .20, vmax = 1 / (1 - (a + d) / 2);
+        if (t < a) return vmax * t * t / (2 * a);
+        if (t < 1 - d) return vmax * (a / 2 + (t - a));
+        var r = 1 - t; return 1 - vmax * r * r / (2 * d);
       }
+      function flightU(t) { return trapezoid(Math.min(1, t / FLIGHT_END)); }
 
       function getPhase(t) {
         for (var i = 0; i < phases.length; i++) if (t < phases[i].end) return phases[i];
         return phases[phases.length - 1];
       }
 
+      function smooth(x) { x = Math.max(0, Math.min(1, x)); return x * x * (3 - 2 * x); }
+
       function setupFly3D() {
         if (!window.THREE) return;
         var T = window.THREE;
-        var scene = new T.Scene();
-        var camera = new T.OrthographicCamera(0, 900, 0, 610, -1000, 1000);
-        camera.position.z = 500;
+                var scene = new T.Scene();
+        var camera = new T.OrthographicCamera(0, 900, SH, 0, -1200, 1200);
+        camera.position.z = 600;
         var renderer;
         try { renderer = new T.WebGLRenderer({ antialias:true, alpha:true, powerPreference:'high-performance' }); }
         catch (error) { return; }
         renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         renderer.setClearColor(0x000000, 0);
-        renderer.shadowMap.enabled = false;
+        renderer.toneMapping = T.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.05;
         fly3dHost.appendChild(renderer.domElement);
         renderer.domElement.addEventListener('webglcontextlost', function (event) {
           event.preventDefault();
@@ -560,68 +553,92 @@
           resizeFly3D();
         });
 
-        scene.add(new T.HemisphereLight(0xfff3df, 0x273a30, 1.55));
-        var keyLight = new T.DirectionalLight(0xffd6b6, 2.85);
-        keyLight.position.set(-280, -340, 520);
-        keyLight.castShadow = false;
+        scene.add(new T.HemisphereLight(0xfff1dc, 0x2b3a30, 1.1));
+        var keyLight = new T.DirectionalLight(0xffe0c2, 3.0);
+        keyLight.position.set(-300, 420, 520);
         scene.add(keyLight);
-        var rimLight = new T.DirectionalLight(0xb7d8c9, 1.25);
-        rimLight.position.set(320, 60, 240);
+        var rimLight = new T.DirectionalLight(0xa9d6ff, 1.3);
+        rimLight.position.set(380, 140, -260);
         scene.add(rimLight);
+        var fillLight = new T.DirectionalLight(0xffc9a0, .5);
+        fillLight.position.set(300, -200, 300);
+        scene.add(fillLight);
 
-        function material(rgb, options) {
-          return new T.MeshStandardMaterial(Object.assign({ color:new T.Color(rgb[0], rgb[1], rgb[2]), roughness:.62 }, options || {}));
+        function mat(hex, o) { return new T.MeshStandardMaterial(Object.assign({ color:new T.Color(hex), roughness:.6 }, o || {})); }
+        function placeCylinder(mesh, a, b) {
+          var d = new T.Vector3().subVectors(b, a);
+          var len = Math.max(1e-5, d.length());
+          mesh.position.copy(a).add(b).multiplyScalar(.5);
+          mesh.quaternion.setFromUnitVectors(new T.Vector3(0,1,0), d.multiplyScalar(1 / len));
+          mesh.scale.set(1, len, 1);
         }
-        function cylinderBetween(a, b, radius, mat, parent) {
-          var va = new T.Vector3(a[0],a[1],a[2]);
-          var vb = new T.Vector3(b[0],b[1],b[2]);
-          var delta = new T.Vector3().subVectors(vb,va);
-          var mesh = new T.Mesh(new T.CylinderGeometry(radius, radius*.82, delta.length(), 8), mat);
-          mesh.position.copy(va).add(vb).multiplyScalar(.5);
-          mesh.quaternion.setFromUnitVectors(new T.Vector3(0,1,0), delta.clone().normalize());
+        var unitCyl = new T.CylinderGeometry(1, .8, 1, 8, 1);
+        function cylinderBetween(a, b, radius, m, parent) {
+          var mesh = new T.Mesh(unitCyl, m);
+          mesh.scale.set(radius, 1, radius);
+          placeCylinder(mesh, new T.Vector3(a[0],a[1],a[2]), new T.Vector3(b[0],b[1],b[2]));
+          mesh.scale.x = mesh.scale.z = radius;
           parent.add(mesh);
           return mesh;
         }
 
-        /* The fruit is a true lit mesh: a lobed, dimpled skin with vertex-level
-           bruising, a separate stem and leaf, and mold colonies sitting on the surface. */
+        /* ---------- apple: y-up, real stem cavity and calyx, sunken rot, specular skin ---------- */
         var appleGroup = new T.Group();
-        appleGroup.position.set(480, 351, 0);
+        appleGroup.position.set(480, SH - 372, 0);
         scene.add(appleGroup);
-        var rings = 42, slices = 72;
+        var BR = new T.Vector3(.60,.10,.80).normalize();     /* rot direction (matches landing patch) */
+        function n3(x, y, z) {
+          return Math.sin(x*.047+y*.031+1.3) * Math.cos(z*.052-y*.023) * .5
+               + Math.sin(x*.13 - z*.11 + y*.09) * .25 + Math.sin(y*.21+z*.17+x*.05) * .12;
+        }
+        function appleSurface(theta, v, includeRot) {
+          /* v: 0 = bottom (calyx), 1 = top (stem). */
+          var ang = Math.PI * v;
+          var s = Math.sin(ang);
+          var shoulder = 1 + .10 * Math.sin(ang - .6) - .03 * Math.cos(ang * 2.0);
+          var rad = 166 * Math.pow(s, .86) * (1 - .10 * (1 - v)) * shoulder * (1 + .028 * Math.cos(theta * 5 + 1.1) * Math.pow(s, 2.0));
+          var y = -150 * Math.cos(ang) * (v > .5 ? 1.0 : .93) + 4;
+          y -= 36 * Math.exp(-Math.pow((1 - v) / .12, 2));       /* stem cavity */
+          y += 17 * Math.exp(-Math.pow(v / .12, 2));             /* calyx basin */
+          var x = Math.cos(theta) * rad, z = Math.sin(theta) * rad * .93;
+          return { x:x, y:y, z:z };
+        }
+        var rings = 64, slices = 96;
         var vertices = [], colors = [], indices = [];
+        var tmpDir = new T.Vector3();
         for (var r = 0; r <= rings; r++) {
           var v = r / rings;
-          var y = -145 + v * 294;
-          y += 11 * Math.exp(-Math.pow(v / .075, 2));
-          y -= 5 * Math.exp(-Math.pow((1 - v) / .065, 2));
-          var shoulder = .94 + .12 * Math.cos(Math.PI * 2 * (v - .42));
-          var baseRadius = 171 * Math.pow(Math.sin(Math.PI * v), .34) * shoulder;
           for (var j = 0; j <= slices; j++) {
             var theta = j / slices * Math.PI * 2;
-            var lobe = 1 + .032 * Math.cos(theta * 5) * Math.pow(Math.sin(Math.PI*v), 1.7);
-            var radius = baseRadius * lobe;
-            var x = Math.cos(theta) * radius;
-            var z = Math.sin(theta) * radius * .86;
-            var seed = Math.sin(x*.117 + y*.071 + z*.043) * .5 + .5;
-            vertices.push(x, y, z);
-            var dir = new T.Vector3(x/180, (y-32)/145, z/155).normalize();
-            var bruiseDir = new T.Vector3(.48,.15,.86).normalize();
-            var bruise = Math.max(0, dir.dot(bruiseDir) - .58) / .42;
-            bruise *= Math.max(0, 1 - Math.abs(y-44)/112);
-            var topShade = Math.max(0, (-y-83)/80);
-            var mottling = (Math.sin(x*.071 + z*.053) * Math.cos(y*.063 - x*.027) + 1) * .5;
-            var blush = Math.max(0, Math.cos(theta + .75)) * Math.max(0, 1 - Math.abs(y + 8) / 155);
-            var rr = .56 + seed*.045 + mottling*.035 + blush*.055 - bruise*.34 - topShade*.08;
-            var gg = .075 + seed*.018 + blush*.035 - bruise*.028;
-            var bb = .035 + seed*.014 + blush*.012 - bruise*.01;
-            colors.push(Math.max(.12,rr), Math.max(.025,gg), Math.max(.018,bb));
+            var P = appleSurface(theta, v);
+            tmpDir.set(P.x / 170, (P.y - 4) / 150, P.z / 160).normalize();
+            var rot = Math.max(0, tmpDir.dot(BR) - .70) / .30;           /* 0..1 */
+            rot = Math.min(1, rot * 1.5);
+            var rotSmooth = rot * rot * (3 - 2 * rot);
+            var dent = n3(P.x*.5, P.y*.5, P.z*.5) * 2.4 - rotSmooth * 13 + rotSmooth * n3(P.x*2, P.y*2, P.z*2) * 5;
+            var len = Math.sqrt(P.x*P.x + (P.y-4)*(P.y-4) + P.z*P.z) || 1;
+            var nx = P.x / len, ny = (P.y-4) / len, nz = P.z / len;
+            vertices.push(P.x + nx*dent, P.y + ny*dent, P.z + nz*dent);
+            /* skin colour: red with vertical streaks, yellow-green near the stem, brown rot */
+            var streak = Math.sin(theta * 23 + n3(P.x, P.y, P.z) * 5) * .5 + .5;
+            var sunSide = Math.max(0, Math.cos(theta - .9)) * Math.sin(Math.PI * v);
+            var top = Math.pow(v, 6) * .9 + Math.pow(1 - v, 8) * .5;
+            var rr = .50 + sunSide*.16 + streak*.07 + top*.18;
+            var gg = .045 + streak*.04 + top*.30;
+            var bb = .035 + top*.05;
+            var spots = Math.max(0, Math.sin(P.x*.9)*Math.sin(P.z*.8+P.y*.4) - .93) * 9;
+            rr += spots*.2; gg += spots*.16; bb += spots*.07;
+            var halo = Math.max(0, Math.min(1, rot * 1.9));
+            var rr2 = rr*(1-halo) + (.22 + n3(P.x*3,P.y*3,P.z*3)*.05)*halo;
+            var gg2 = gg*(1-halo) + (.085)*halo;
+            var bb2 = bb*(1-halo) + (.035)*halo;
+            colors.push(Math.max(.03,rr2), Math.max(.01,gg2), Math.max(.01,bb2));
           }
         }
         for (var rrn = 0; rrn < rings; rrn++) {
           for (var ss = 0; ss < slices; ss++) {
-            var a = rrn*(slices+1)+ss, b=a+slices+1;
-            indices.push(a,b,a+1,b,b+1,a+1);
+            var a = rrn*(slices+1)+ss, b = a+slices+1;
+            indices.push(a, a+1, b, b, a+1, b+1);
           }
         }
         var appleGeometry = new T.BufferGeometry();
@@ -629,122 +646,226 @@
         appleGeometry.setAttribute('color', new T.Float32BufferAttribute(colors,3));
         appleGeometry.setIndex(indices);
         appleGeometry.computeVertexNormals();
-        var appleMat = new T.MeshStandardMaterial({ vertexColors:true, roughness:.34, metalness:.01 });
-        var appleMesh = new T.Mesh(appleGeometry, appleMat);
-        appleMesh.castShadow = false;
+        var appleMesh = new T.Mesh(appleGeometry, new T.MeshPhysicalMaterial({
+          vertexColors:true, roughness:.36, metalness:0, clearcoat:.75, clearcoatRoughness:.28, side:T.DoubleSide
+        }));
         appleGroup.add(appleMesh);
 
-        var stemMat = material([.12,.075,.045], { roughness:.92 });
-        var stem = new T.Mesh(new T.CylinderGeometry(7,10,78,12), stemMat);
-        stem.position.set(-10,-184,0);
-        stem.rotation.z = .29;
+        /* curved stem */
+        var stemCurve = new T.CatmullRomCurve3([
+          new T.Vector3(0,-6,0), new T.Vector3(3,26,0), new T.Vector3(10,56,0), new T.Vector3(24,78,0)
+        ]);
+        var stem = new T.Mesh(new T.TubeGeometry(stemCurve, 16, 6, 10, false), mat('#3a2616', { roughness:.9 }));
+        stem.position.set(-6, 128 - 36 + 12, 0);
         appleGroup.add(stem);
+        var stemCap = new T.Mesh(new T.SphereGeometry(7.2, 12, 8), mat('#2a1a0e', { roughness:.95 }));
+        stemCap.position.set(-6 + 24, 128 - 36 + 12 + 78, 0);
+        appleGroup.add(stemCap);
 
+        /* leaf with midrib bend */
         var leafShape = new T.Shape();
         leafShape.moveTo(0,0);
-        leafShape.bezierCurveTo(28,-30,75,-25,105,0);
-        leafShape.bezierCurveTo(72,27,28,27,0,0);
-        var leaf = new T.Mesh(new T.ShapeGeometry(leafShape,16), material([.19,.34,.11], { side:T.DoubleSide, roughness:.72 }));
-        leaf.position.set(0,-207,8);
-        leaf.rotation.set(-.12,0,-.16);
+        leafShape.bezierCurveTo(26,28,78,30,112,2);
+        leafShape.bezierCurveTo(78,-26,26,-24,0,0);
+        var leafGeo = new T.ShapeGeometry(leafShape, 20);
+        var lp = leafGeo.attributes.position;
+        for (var li = 0; li < lp.count; li++) {
+          var lx = lp.getX(li), ly = lp.getY(li);
+          lp.setZ(li, Math.sin(lx * .03) * 8 + Math.abs(ly) * .22 - lx * .05);
+        }
+        leafGeo.computeVertexNormals();
+        var leaf = new T.Mesh(leafGeo, mat('#4c7a2a', { side:T.DoubleSide, roughness:.65 }));
+        leaf.position.set(14, 128 - 36 + 12 + 62, 6);
+        leaf.rotation.set(.1, 0, .22);
         appleGroup.add(leaf);
-        cylinderBetween([2,-207,9],[97,-207,9],1.2,material([.12,.23,.075]),appleGroup);
 
-        var moldMatA = material([.48,.60,.25], { roughness:1 });
-        var moldMatB = material([.72,.72,.42], { roughness:1 });
-        [[72,33,129,12],[103,58,104,9],[49,66,135,8],[95,23,112,6],[65,84,117,7],[118,72,80,5]].forEach(function (m, i) {
-          var colony = new T.Mesh(new T.SphereGeometry(m[3],12,8), i%3 ? moldMatA : moldMatB);
-          colony.scale.z = .22;
-          colony.position.set(m[0],m[1],m[2]);
-          appleGroup.add(colony);
+        /* mold colonies sitting on the sunken patch */
+        var moldA = mat('#8fa860', { roughness:1 }), moldB = mat('#d9d9a8', { roughness:1 }), moldC = mat('#5b7a4a', { roughness:1 });
+        var moldGeo = new T.SphereGeometry(1, 14, 10);
+        var moldSeeds = [];
+        var tang1 = new T.Vector3().crossVectors(BR, new T.Vector3(0,1,0)).normalize();
+        var tang2 = new T.Vector3().crossVectors(tang1, BR).normalize();
+        moldSeeds.forEach(function (m, i) {
+          var dir = BR.clone().addScaledVector(tang1, m[0]).addScaledVector(tang2, m[1]).normalize();
+          var best = appleRayHit(dir);
+          var blob = new T.Mesh(moldGeo, i % 3 === 0 ? moldB : (i % 3 === 1 ? moldA : moldC));
+          blob.scale.set(m[2], m[2] * .8, m[2] * .38);
+          blob.position.copy(best.p);
+          blob.quaternion.setFromUnitVectors(new T.Vector3(0,0,1), best.n);
+          appleGroup.add(blob);
         });
+        function appleRayHit(dir) {
+          /* march along dir from the apple core until we leave the mesh surface */
+          var origin = new T.Vector3(0, 4, 0), pos = new T.Vector3();
+          var lo = 40, hi = 260;
+          for (var k = 0; k < 24; k++) {
+            var mid = (lo + hi) / 2;
+            pos.copy(origin).addScaledVector(dir, mid);
+            var inside = isInsideApple(pos);
+            if (inside) lo = mid; else hi = mid;
+          }
+          var p = origin.clone().addScaledVector(dir, lo);
+          return { p:p, n:dir.clone() };
+        }
+        function isInsideApple(p) {
+          var th = Math.atan2(p.z / .93, p.x); if (th < 0) th += Math.PI * 2;
+          var best = 1e9, bv = .5;
+          for (var vv = .02; vv < 1; vv += .02) {
+            var S = appleSurface(th, vv);
+            var d = Math.abs(S.y - p.y); if (d < best) { best = d; bv = vv; }
+          }
+          var S2 = appleSurface(th, bv);
+          var rs = Math.sqrt(S2.x*S2.x + (S2.z/.93)*(S2.z/.93)) - 13;
+          return Math.sqrt(p.x*p.x + (p.z/.93)*(p.z/.93)) < rs;
+        }
 
-        var shadow = new T.Mesh(new T.CircleGeometry(1,64), new T.MeshBasicMaterial({ color:0x281813, transparent:true, opacity:.25, depthWrite:false }));
-        shadow.position.set(480,505,-175);
-        shadow.scale.set(215,25,1);
+        /* touchdown point = real surface point on the rot patch; path ends are built from it */
+        var hitL = appleRayHit(BR);
+        var lw = appleGroup.position.clone().add(hitL.p);
+        LAND = [lw.x, SH - lw.y, lw.z];
+        PATH_PTS[0] = LAND; PATH_PTS[PATH_PTS.length - 1] = LAND;
+        var off = [[134,-56,30],[62,-38,18],[19,-12,6]];
+        for (var oi = 0; oi < 3; oi++) PATH_PTS[PATH_PTS.length - 4 + oi] = [LAND[0]+off[oi][0], LAND[1]+off[oi][1], LAND[2]+off[oi][2]];
+        PATH_PTS[1] = [LAND[0]+40, LAND[1]-56, LAND[2]+28];
+        flightCurve = new T.CatmullRomCurve3(PATH_PTS.map(function (p) { return toWorld(p, new T.Vector3()); }), false, 'centripetal');
+
+        /* ground contact shadows */
+        var shadowMat = new T.MeshBasicMaterial({ color:0x1d120d, transparent:true, opacity:.28, depthWrite:false });
+        var shadow = new T.Mesh(new T.CircleGeometry(1,64), shadowMat);
+        shadow.rotation.x = -Math.PI / 2 * .0;
+        shadow.position.set(480, SH - 506, -175);
+        shadow.scale.set(225,26,1);
         scene.add(shadow);
+        var flyShadow = new T.Mesh(new T.CircleGeometry(1,32), new T.MeshBasicMaterial({ color:0x1d120d, transparent:true, opacity:.2, depthWrite:false }));
+        flyShadow.position.z = -300;
+        scene.add(flyShadow);
 
-        /* Anatomical fly: head, thorax, segmented abdomen, paired wings,
-           halteres, antennae and six jointed legs. */
+        /* ---------- fly: head faces +Z, up is +Y, left is +X ---------- */
         var rig = new T.Group();
-        var displayScale = new T.Group();
         var character = new T.Group();
-        displayScale.scale.setScalar(320);
-        character.scale.setScalar(.52);
-        character.rotation.set(-Math.PI / 2, 0, 0);
-        displayScale.add(character);
-        rig.add(displayScale);
+        var S = 150;
+        character.scale.setScalar(S);
+        rig.add(character);
         scene.add(rig);
+        var body = new T.Group();
+        character.add(body);
 
-        var cuticle = material([.055,.105,.08], { roughness:.66 });
-        var thoraxMat = material([.095,.15,.105], { roughness:.76 });
-        var bandMat = material([.34,.21,.055], { roughness:.74 });
-        var eyeMaterial = material([.64,.13,.045], { emissive:new T.Color(.13,.012,.004), emissiveIntensity:.42, roughness:.42 });
-        var wingMaterial = material([.56,.76,.72], { transparent:true, opacity:.46, side:T.DoubleSide, depthWrite:false, roughness:.25 });
-        var limbMaterial = material([.09,.135,.10], { roughness:.82 });
-        var sphere = new T.SphereGeometry(1, 24, 16);
+        var cuticle = mat('#2b1f15', { roughness:.5 });
+        var thoraxMat = mat('#a97b43', { roughness:.55 });
+        var bandMat = mat('#c49b5a', { roughness:.55 });
+        var bandDark = mat('#1d1812', { roughness:.5 });
+        var eyeMaterial = mat('#b3201a', { emissive:new T.Color('#5a0b06'), emissiveIntensity:.7, roughness:.18, metalness:.1 });
+        var wingMaterial = new T.MeshPhysicalMaterial({ color:0xcfe6e0, transparent:true, opacity:.5, side:T.DoubleSide, depthWrite:false, roughness:.1, transmission:0, iridescence:.8, iridescenceIOR:1.4 });
+        var limbMaterial = mat('#2a241a', { roughness:.75 });
+        var sphere = new T.SphereGeometry(1, 28, 18);
 
-        var thorax = new T.Mesh(sphere, thoraxMat);
-        thorax.scale.set(.115,.105,.14);
-        character.add(thorax);
-        var abdomenSegments = [
-          {z:.13,s:[.105,.09,.11],m:cuticle},
-          {z:.23,s:[.10,.083,.10],m:bandMat},
-          {z:.315,s:[.086,.073,.086],m:cuticle},
-          {z:.385,s:[.062,.055,.07],m:bandMat}
+        function blobAt(m, sx, sy, sz, x, y, z, parent) {
+          var o = new T.Mesh(sphere, m); o.scale.set(sx,sy,sz); o.position.set(x,y,z); (parent || body).add(o); return o;
+        }
+        blobAt(thoraxMat, .115,.115,.15, 0,.01,0);                 /* thorax */
+        blobAt(bandDark, .09,.045,.10, 0,.092,.02);                /* scutellum / dorsal plate */
+        var abd = [
+          {z:-.14,s:[.100,.088,.075],m:bandMat}, {z:-.215,s:[.098,.086,.070],m:cuticle},
+          {z:-.285,s:[.092,.080,.066],m:bandMat}, {z:-.350,s:[.084,.072,.062],m:cuticle},
+          {z:-.410,s:[.070,.062,.058],m:bandMat}, {z:-.465,s:[.050,.048,.048],m:cuticle}
         ];
-        abdomenSegments.forEach(function (part) {
-          var seg = new T.Mesh(sphere,part.m); seg.scale.set(part.s[0],part.s[1],part.s[2]); seg.position.z=part.z; character.add(seg);
-        });
-        var head = new T.Mesh(sphere, cuticle);
-        head.scale.set(.11,.10,.105);
-        head.position.set(0,.006,-.185);
-        character.add(head);
+        abd.forEach(function (p) { blobAt(p.m, p.s[0],p.s[1],p.s[2], 0,-.012 - (-p.z-.14)*.05, p.z); });
+        var headGroup = new T.Group();
+        headGroup.position.set(0,.0,.19);
+        body.add(headGroup);
+        blobAt(thoraxMat, .085,.085,.08, 0,0,0, headGroup);
         [-1,1].forEach(function (side) {
-          var eye = new T.Mesh(sphere,eyeMaterial);
-          eye.scale.set(.066,.07,.05);
-          eye.position.set(side*.077,.018,-.218);
-          character.add(eye);
-          cylinderBetween([side*.037,-.002,-.27],[side*.07,-.018,-.33],.006,limbMaterial,character);
-          cylinderBetween([side*.07,-.018,-.33],[side*.095,-.03,-.37],.0035,limbMaterial,character);
+          var eye = blobAt(eyeMaterial, .062,.078,.06, side*.066,.012,.032, headGroup);
+          blobAt(mat('#ffffff', { emissive:new T.Color('#ffffff'), emissiveIntensity:.6, roughness:.1 }), .012,.012,.012, side*.082,.05,.07, headGroup);
+          /* antennae: arista + funiculus */
+          cylinderBetween([side*.025,.025,.07],[side*.04,.04,.108],.005,limbMaterial,headGroup);
+          blobAt(limbMaterial, .017,.02,.026, side*.042,.038,.118, headGroup);
+          cylinderBetween([side*.044,.04,.138],[side*.075,.062,.2],.0016,limbMaterial,headGroup);
         });
-        cylinderBetween([0,.012,-.275],[0,.035,-.337],.012,limbMaterial,character);
+        blobAt(thoraxMat, .045,.03,.04, 0,-.04,.06, headGroup);   /* clypeus */
+        var proboscis = new T.Group();
+        proboscis.position.set(0,-.06,.07);
+        headGroup.add(proboscis);
+        var probStalk = new T.Mesh(unitCyl, mat('#c9a979', { roughness:.7 }));
+        probStalk.scale.set(.013, 1, .013);
+        proboscis.add(probStalk);
+        var probTip = blobAt(mat('#e9c9a0', { roughness:.4 }), .026,.016,.03, 0,0,0, proboscis);
+        proboscis.scale.setScalar(.001);
 
         var wings = [];
         [-1,1].forEach(function (side) {
-          var wingRoot = new T.Group();
-          wingRoot.position.set(side*.085,.038,-.035);
-          var wg = new T.BufferGeometry();
-          wg.setAttribute('position',new T.Float32BufferAttribute([
-            0,0,0, side*.11,.002,-.015, side*.36,.006,.04, side*.46,.002,.17, side*.22,0,.22
-          ],3));
-          wg.setIndex([0,1,2,0,2,3,0,3,4]);
-          wg.computeVertexNormals();
-          var wingMesh = new T.Mesh(wg,wingMaterial);
-          wingRoot.add(wingMesh);
-          var veinMat = new T.LineBasicMaterial({color:0x526e62,transparent:true,opacity:.48});
-          [[0,0,0,side*.43,.004,.16],[side*.10,.002,.018,side*.35,.004,.045],[side*.10,.002,.018,side*.27,.003,.19]].forEach(function(vn){
-            var vg=new T.BufferGeometry().setFromPoints([new T.Vector3(vn[0],vn[1],vn[2]),new T.Vector3(vn[3],vn[4],vn[5])]);
-            wingRoot.add(new T.Line(vg,veinMat));
+          var root = new T.Group();                 /* sweep (y) then stroke (z) */
+          root.position.set(side*.075,.085,.035);
+          var stroke = new T.Group();
+          root.add(stroke);
+          /* teardrop wing outline in the x/z plane, pointing outward (+/-x) and back (-z) */
+          var shape = new T.Shape();
+          shape.moveTo(0,0);
+          shape.bezierCurveTo(.04,.06,.2,.075,.36,.05);
+          shape.bezierCurveTo(.46,.02,.47,-.08,.40,-.2);
+          shape.bezierCurveTo(.30,-.33,.12,-.28,0,-.04);
+          var geo = new T.ShapeGeometry(shape, 18);
+          var pp = geo.attributes.position;
+          for (var q = 0; q < pp.count; q++) pp.setXYZ(q, pp.getX(q), Math.sin(pp.getX(q) * 7) * .004, pp.getY(q));
+          geo.computeVertexNormals();
+          stroke.add(new T.Mesh(geo, wingMaterial));
+          var veinMat = new T.LineBasicMaterial({ color:0x5c746c, transparent:true, opacity:.55 });
+          [[.01,0,.0,.44,0,-.1],[.02,0,-.02,.36,0,-.2],[.02,0,-.03,.24,0,-.27],[.05,0,.02,.42,0,.03]].forEach(function (vn) {
+            var vg = new T.BufferGeometry().setFromPoints([new T.Vector3(vn[0],vn[1],vn[2]), new T.Vector3(vn[3],vn[4],vn[5])]);
+            stroke.add(new T.Line(vg, veinMat));
           });
-          character.add(wingRoot);
-          wings.push({mesh:wingRoot,side:side});
-          cylinderBetween([side*.09,.03,.055],[side*.16,.02,.105],.007,limbMaterial,character);
-          var haltere = new T.Mesh(sphere,bandMat); haltere.scale.setScalar(.018); haltere.position.set(side*.17,.02,.11); character.add(haltere);
+          stroke.scale.x = side;
+          body.add(root);
+          wings.push({ root:root, stroke:stroke, side:side });
+          blobAt(bandMat, .012,.012,.012, side*.095,.03,-.06);   /* haltere knob */
+          cylinderBetween([side*.07,.03,-.04],[side*.095,.03,-.06],.004,limbMaterial,body);
         });
 
-        var legAnchors = [-.075,.035,.13];
+        /* legs: 2-bone IK from hip to a foot target (model space) */
+        var legs = [];
+        var hips = [.085,.0,-.085].map(function (z, idx) { return { z:z + .03, idx:idx }; });
         [-1,1].forEach(function (side) {
-          legAnchors.forEach(function (z0, idx) {
-            var hip=[side*.082,-.045,z0];
-            var knee=[side*(.17+idx*.022),-.12,z0-(idx-1)*.035];
-            var ankle=[side*(.27+idx*.032),-.22,z0+(idx-1)*.045];
-            var foot=[side*(.34+idx*.03),-.245,z0+(idx-1)*.075];
-            cylinderBetween(hip,knee,.0085,limbMaterial,character);
-            cylinderBetween(knee,ankle,.0065,limbMaterial,character);
-            cylinderBetween(ankle,foot,.004,limbMaterial,character);
+          hips.forEach(function (h) {
+            var thigh = new T.Mesh(unitCyl, limbMaterial);
+            var shin = new T.Mesh(unitCyl, limbMaterial);
+            var tarsus = new T.Mesh(unitCyl, limbMaterial);
+            thigh.scale.set(.011,1,.011); shin.scale.set(.008,1,.008); tarsus.scale.set(.005,1,.005);
+            body.add(thigh, shin, tarsus);
+            var footBlob = blobAt(limbMaterial, .009,.006,.012, 0,0,0);
+            legs.push({
+              side:side, idx:h.idx,
+              hip:new T.Vector3(side*.07, -.075, h.z),
+              thigh:thigh, shin:shin, tarsus:tarsus, foot:footBlob,
+              L1:.16, L2:.19,
+              tuck:new T.Vector3(side*(.075 + h.idx*.012), -.2 - h.idx*.01, h.z - .09 - h.idx*.06),
+              plant:new T.Vector3(side*(.17 + (h.idx===1?.03:0)), -.185, h.z + (h.idx===0?.13:(h.idx===1?.0:-.12)))
+            });
           });
         });
+        var tmpA = new T.Vector3(), tmpB = new T.Vector3(), tmpC = new T.Vector3();
+        function solveLeg(leg, target) {
+          var hip = leg.hip;
+          var d = tmpA.subVectors(target, hip);
+          var dist = Math.min(d.length(), (leg.L1 + leg.L2) * .985);
+          d.normalize();
+          var a = (leg.L1*leg.L1 - leg.L2*leg.L2 + dist*dist) / (2*dist);
+          var h = Math.sqrt(Math.max(0, leg.L1*leg.L1 - a*a));
+          var pole = tmpB.set(leg.side*.55, .85, 0).normalize();
+          pole.addScaledVector(d, -pole.dot(d)).normalize();
+          var knee = tmpC.copy(hip).addScaledVector(d, a).addScaledVector(pole, h);
+          var kneeP = knee.clone();
+          var foot = hip.clone().addScaledVector(d, dist);
+          placeCylinder(leg.thigh, hip, kneeP);
+          leg.thigh.scale.x = leg.thigh.scale.z = .011;
+          var tarsusStart = foot.clone().addScaledVector(new T.Vector3(0,-1,0), 0); /* shin ends at ankle */
+          var ankle = foot.clone().add(new T.Vector3(leg.side*.0, .0, -.0));
+          placeCylinder(leg.shin, kneeP, ankle);
+          leg.shin.scale.x = leg.shin.scale.z = .0075;
+          var toe = ankle.clone().add(new T.Vector3(0,-.02,.025));
+          placeCylinder(leg.tarsus, ankle, toe);
+          leg.tarsus.scale.x = leg.tarsus.scale.z = .0045;
+          leg.foot.position.copy(toe);
+        }
 
         fly3dHost.parentElement.classList.add('fly-model-ready');
 
@@ -753,35 +874,30 @@
           renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
           renderer.setSize(Math.max(1, rect.width), Math.max(1, rect.height), false);
           var aspect = Math.max(1, rect.width) / Math.max(1, rect.height);
-          var baseAspect = 900 / 610;
+          var baseAspect = 900 / SH;
           if (aspect > baseAspect) {
-            var worldW = 610 * aspect;
-            camera.left = (900 - worldW) / 2;
-            camera.right = camera.left + worldW;
-            camera.top = 0; camera.bottom = 610;
+            var worldW = SH * aspect;
+            camera.left = (900 - worldW) / 2; camera.right = camera.left + worldW;
+            camera.top = SH; camera.bottom = 0;
           } else {
             var worldH = 900 / aspect;
             camera.left = 0; camera.right = 900;
-            camera.top = (610 - worldH) / 2;
-            camera.bottom = camera.top + worldH;
+            camera.top = SH + (worldH - SH) / 2; camera.bottom = camera.top - worldH;
           }
           camera.updateProjectionMatrix();
         }
         var observer = new ResizeObserver(resizeFly3D);
         observer.observe(fly3dHost);
         resizeFly3D();
-        rig.rotation.order = 'ZXY';
-        displayScale.rotation.order = 'ZXY';
+
+        /* landing frame: surface normal at the touchdown point (apple-local -> world) */
+        var landWorld = toWorld(LAND, new T.Vector3());
+        var landNormal = BR.clone();
         fly3d = {
-          renderer:renderer,
-          scene:scene,
-          camera:camera,
-          rig:rig,
-          displayScale:displayScale,
-          wings:wings,
-          heading:null,
-          bank:0,
-          pitch:0
+          renderer:renderer, scene:scene, camera:camera, rig:rig, body:body, wings:wings, legs:legs,
+          solveLeg:solveLeg, headGroup:headGroup, proboscis:proboscis, probStalk:probStalk, probTip:probTip,
+          appleGroup:appleGroup, shadow:flyShadow, landNormal:landNormal, landPos:landWorld,
+          fwd:null, up:null, bank:0, quat:new T.Quaternion(), prevFwd:null, lastNow:0, T:T
         };
       }
 
@@ -789,35 +905,137 @@
         return Math.atan2(Math.sin(to - from), Math.cos(to - from));
       }
 
-      function updateFly3D(p, angle, sitting, now, bank, pitch, frameDelta) {
+      var _v = {};
+      function updateFly3D(t, now, frameDelta, paused) {
         if (!fly3d) return;
-        var flutter = sitting ? 0 : Math.sin(now * .009) * 2.4;
-        fly3d.rig.position.set(p.x, p.y + flutter, p.z + (sitting ? 0 : Math.sin(now * .0063) * 4));
+        var T = fly3d.T;
+        if (!_v.a) { _v.a = new T.Vector3(); _v.b = new T.Vector3(); _v.c = new T.Vector3(); _v.r = new T.Vector3(); _v.u = new T.Vector3(); _v.m = new T.Matrix4(); _v.q = new T.Quaternion(); _v.up = new T.Vector3(0,1,0); }
+        var flying = t < FLIGHT_END;
+        var u = flightU(t);
+        var pos = flightCurve.getPointAt(Math.min(1, u), _v.a).clone();
+        var ahead = flightCurve.getPointAt(Math.min(1, u + .004), _v.b).clone();
+        var behind = flightCurve.getPointAt(Math.max(0, u - .004), _v.c).clone();
+        var fwd = new T.Vector3().subVectors(ahead, behind);
+        if (fwd.lengthSq() < 1e-6) fwd.copy(fly3d.fwd || new T.Vector3(0,0,1));
+        fwd.normalize();
 
-        var targetHeading = angle * Math.PI / 180;
-        if (fly3d.heading === null) fly3d.heading = targetHeading;
-        var headingEase = 1 - Math.pow(1 - (sitting ? .18 : .11), frameDelta);
-        var bankEase = 1 - Math.pow(.91, frameDelta);
-        var pitchEase = 1 - Math.pow(.92, frameDelta);
-        fly3d.heading += shortestAngle(fly3d.heading, targetHeading) * headingEase;
-        fly3d.bank += (bank - fly3d.bank) * bankEase;
-        fly3d.pitch += (pitch - fly3d.pitch) * pitchEase;
-        fly3d.rig.rotation.z = fly3d.heading;
-        fly3d.displayScale.rotation.x = fly3d.bank;
-        fly3d.displayScale.rotation.y = fly3d.pitch;
+        /* landing blend: during the last stretch of flight and the taste phase, align to the surface */
+        var landBlend = smooth((t - .70) / .10);
+        var takeoffBlend = 1 - smooth(t / .06);
+        var surface = fly3d.landNormal;
+        var settled = t >= FLIGHT_END ? 1 : 0;
 
-        /* Orthographic staging keeps the apple undistorted, so depth is also
-           expressed by a restrained perspective scale cue. Actual z still
-           controls whether the fly passes in front of or behind the fruit. */
-        var depth = Math.max(0, Math.min(1, (p.z + 224) / 478));
-        var spatialScale = sitting ? .8 : (.70 + depth * .49);
-        fly3d.rig.scale.setScalar(spatialScale);
-        fly3d.wings.forEach(function (wing) {
-          wing.mesh.rotation.z = sitting ? 0 : Math.sin(now / 1000 * 85) * wing.side * .65;
-          wing.mesh.rotation.x = sitting ? 0 : -fly3d.bank * wing.side * .24;
+        /* bank from turn rate */
+        var turn = 0;
+        if (fly3d.prevFwd) {
+          var cr = _v.r.crossVectors(fly3d.prevFwd, fwd);
+          turn = cr.y;
+        }
+        fly3d.prevFwd = fwd.clone();
+        var bankTarget = Math.max(-.75, Math.min(.75, turn * 60 / Math.max(.25, frameDelta)));
+        fly3d.bank += (bankTarget - fly3d.bank) * (1 - Math.pow(.88, frameDelta));
+        var bank = fly3d.bank * (1 - landBlend);
+
+        /* pose: forward vector smoothed to avoid jitter */
+        if (!fly3d.fwd) fly3d.fwd = fwd.clone();
+        var targetFwd = fwd.clone();
+        if (t >= .74) {
+          /* face along the surface toward the left-up for a natural stance on the apple */
+          var along = new T.Vector3(-.35, .55, .0).sub(surface.clone().multiplyScalar(new T.Vector3(-.35, .55, .0).dot(surface))).normalize();
+          targetFwd.lerp(along, smooth((t - .74) / .08)).normalize();
+        }
+        fly3d.fwd.lerp(targetFwd, 1 - Math.pow(.84, frameDelta)).normalize();
+        var f = fly3d.fwd.clone();
+        var upRef = _v.up.clone().lerp(surface, landBlend).normalize();
+        var right = new T.Vector3().crossVectors(upRef, f);
+        if (right.lengthSq() < 1e-6) right.set(1,0,0);
+        right.normalize();
+        var upv = new T.Vector3().crossVectors(f, right).normalize();
+        upv.applyAxisAngle(f, bank);
+        right.crossVectors(upv, f).normalize();
+        /* model: +X left, +Y up, +Z forward -> left = up x forward */
+        var left = new T.Vector3().crossVectors(upv, f).normalize();
+        _v.m.makeBasis(left, upv, f);
+        fly3d.rig.quaternion.setFromRotationMatrix(_v.m);
+
+        /* wing beat hover bob + position */
+        var tt = now * .001;
+        var bob = flying ? Math.sin(tt * 9) * 2.2 * (1 - landBlend) : 0;
+        var landTarget = fly3d.landPos.clone().addScaledVector(surface, 20);
+        if (!flying) pos.copy(landTarget);
+        else if (landBlend > 0) pos.lerp(pos, 1);
+        pos.y += bob;
+        fly3d.rig.position.copy(pos);
+
+        var depth = Math.max(0, Math.min(1, (pos.z + 250) / 550));
+        var sc = settled ? .86 : (.72 + depth * .46);
+        fly3d.rig.scale.setScalar(sc);
+
+        /* wings: fast stroke when airborne, folded over the abdomen when perched */
+        var airborne = flying ? 1 : 0;
+        var fold = smooth((t - .765) / .035) * (flying ? 1 : 1);
+        var spread = 1 - (t >= .74 ? fold : 0);
+        var beatFreq = 160;
+        var buzz = Math.sin(tt * beatFreq);
+        fly3d.wings.forEach(function (w) {
+          var strokeAngle = buzz * .85 * w.side * 0 + buzz * .75;
+          w.stroke.rotation.z = (strokeAngle * .0 + buzz * .7) * spread * -w.side * -1 * 1 + (1 - spread) * 0.0;
+          w.root.rotation.y = w.side * ((1 - spread) * (1.45) + spread * (.15 + .1 * Math.sin(tt * 5)));
+          w.root.rotation.x = spread * (.12 * (1 - landBlend) + bank * .0) + (1 - spread) * .0;
+          w.root.rotation.z = (1 - spread) * w.side * .08;
+          w.stroke.rotation.x = spread * .25 * Math.cos(tt * beatFreq);
         });
+        /* airframe pitching with the wingbeat */
+        fly3d.body.position.y = spreadLift(spread, buzz);
+        fly3d.body.rotation.x = spread * Math.sin(tt * 7) * .03;
+
+        /* legs */
+        var landed = smooth((t - .765) / .035);
+        var reach = smooth((t - .70) / .09);
+        fly3d.legs.forEach(function (leg) {
+          var target = leg.tuck.clone().lerp(leg.plant, Math.max(reach * .85, landed));
+          if (!airborne || t > FLIGHT_END) {
+            /* dangling slightly while airborne */
+          }
+          if (flying) target.y += Math.sin(tt * 6 + leg.idx + leg.side) * .006 * (1 - reach);
+          if (t >= .83) {
+            var rubT = Math.sin(tt * 9.5 + (leg.side > 0 ? 0 : 1.7));
+            var rubAmt = smooth((t - .83) / .03) * (1 - smooth((t - .97) / .03));
+            if (leg.idx === 0) {                 /* front legs: rub together and tap */
+              target.z += .1 * rubAmt;
+              target.x -= leg.side * .06 * rubAmt;
+              target.y += .05 * rubAmt + rubT * .03 * rubAmt;
+              target.z += rubT * .035 * rubAmt;
+            }
+          }
+          fly3d.solveLeg(leg, target);
+        });
+
+        /* head + proboscis: bob down, extend, taste, retract */
+        var tasteT = Math.max(0, Math.min(1, (t - .80) / .20));
+        var dip = smooth((tasteT - .06) / .1) * (1 - smooth((tasteT - .86) / .1));
+        var probExt = smooth((tasteT - .1) / .1) * (1 - smooth((tasteT - .82) / .08));
+        fly3d.headGroup.rotation.x = dip * .45 + Math.sin(tt * 12) * .015 * dip;
+        fly3d.headGroup.rotation.y = Math.sin(tt * 2.3) * .06 * (1 - airborne * .5);
+        var pe = Math.max(.001, probExt);
+        fly3d.proboscis.scale.setScalar(pe);
+        fly3d.probStalk.scale.set(.013, .07, .013);
+        fly3d.probStalk.position.set(0, -.035, .01);
+        fly3d.probStalk.rotation.x = .35;
+        fly3d.probTip.position.set(0, -.07 - Math.sin(tt * 14) * .004 * probExt, .027);
+
+        /* shadow on the ground under the fly */
+        var groundY = SH - 505;
+        var height = Math.max(0, pos.y - groundY);
+        var sp = Math.max(0, 1 - height / 520);
+        fly3d.shadow.position.set(pos.x, groundY, -300);
+        fly3d.shadow.scale.set(26 + 24 * sp, 6 + 6 * sp, 1);
+        fly3d.shadow.material.opacity = .08 + .2 * sp;
+        fly3d.shadow.visible = flying || t < .8;
+
         fly3d.renderer.render(fly3d.scene, fly3d.camera);
       }
+      function spreadLift(spread, buzz) { return spread * buzz * .004; }
 
       function setMeters(t, key) {
         var visual = .18, central = .16, motor = .18, sensory = .12;
@@ -1019,11 +1237,9 @@
         if (paused) {
           start = performance.now() - elapsedBeforePause;
           paused = false;
-          fly.classList.add('flying');
         } else {
           elapsedBeforePause = (performance.now() - start) % cycle;
           paused = true;
-          fly.classList.remove('flying');
         }
         setButton();
       });
@@ -1034,20 +1250,7 @@
         var elapsed = paused ? elapsedBeforePause : (now - start) % cycle;
         var t = elapsed / cycle;
         var phase = getPhase(t);
-        var p = flightPosition(t);
-        var p2 = flightPosition((t + .003) % 1);
-        var p0 = flightPosition((t - .003 + 1) % 1);
-        var headingIn = Math.atan2(p.y-p0.y,p.x-p0.x);
-        var headingOut = Math.atan2(p2.y-p.y,p2.x-p.x);
-        var turn = shortestAngle(headingIn, headingOut);
-        var bank = Math.max(-.52, Math.min(.52, turn * 2.35));
-        var pitch = Math.max(-.34, Math.min(.34, (p2.z-p0.z) * .022));
-        var angle = headingOut * 180 / Math.PI + 90;
-        var sitting = phase.key === 'taste';
-        if (sitting) { angle = 8; bank = 0; pitch = 0; }
-        fly.setAttribute('transform', 'translate(' + p.x.toFixed(2) + ' ' + p.y.toFixed(2) + ') rotate(' + angle.toFixed(2) + ') scale(' + (sitting ? .78 : .9) + ')');
-        updateFly3D(p, angle, sitting, paused ? elapsedBeforePause : now, bank, pitch, frameDelta);
-        fly.classList.toggle('flying', !sitting && !paused);
+        updateFly3D(t, paused ? elapsedBeforePause : now, frameDelta, paused);
         if (phase.key !== lastPhase) {
           phaseValue.textContent = phase.name;
           lastPhase = phase.key;
