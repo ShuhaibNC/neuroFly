@@ -1263,7 +1263,17 @@
       window.addEventListener('resize', setupBrain);
       setupBrain();
       loadBrain();
-      setupFly3D();
+      /* Keep the page animation running if WebGL or the 3D model fails on a desktop GPU.
+         The SVG fly is the fallback and must remain visible whenever 3D setup fails. */
+      try {
+        setupFly3D();
+        if (!fly3d) fly3dHost.parentElement.classList.remove('fly-model-ready');
+      } catch (error) {
+        console.warn('3D fly initialization failed; using the SVG fallback.', error);
+        fly3d = null;
+        fly3dHost.parentElement.classList.remove('fly-model-ready');
+        fly3dHost.replaceChildren();
+      }
       setButton();
       requestAnimationFrame(frame);
     }());
